@@ -1,0 +1,16 @@
+The Jenkins pipeline has encountered a failure during the merge attempt of the [[SOURCE]] branch into the [[TARGET]] branch. Immediate attention is required.
+
+### Details:
+- **Job Name**: [[JOB_NAME]]
+- **Build Number**: [[BUILD_NUMBER]]
+- **Timestamp**: [[DATETIME]]
+
+### Pipeline Status: The merge operation was unsuccessful. 
+
+### Possible script error Log: If an errors log file is attached, please download it for detailed error information. 
+
+### Possible conflicts: If a merge conflicts log file is attached, please review it and resolve these conflicts to proceed with the merge.
+
+For more information please review the job build console outputs on the Jenkins server. 
+
+End of Notification.

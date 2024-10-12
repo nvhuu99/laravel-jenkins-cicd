@@ -1,0 +1,40 @@
+version: '3'
+
+x-agent-common-structure: &agent-common-structure
+    restart: unless-stopped
+    build:
+        context: .
+        dockerfile: ./dockerfile.agent
+    volumes:
+        - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+        - jenkins
+
+services:
+    master:
+        container_name: master
+        restart: unless-stopped
+        build:
+            context: .
+            dockerfile: ./dockerfile.master
+        ports:
+            - "8081:8080"
+        volumes:
+            - ./jenkins-master/mount-data/jenkins-home/:/home/jenkins/
+            - ./jenkins-master/mount-data/backups/:/mnt/jenkins/backups/
+        networks:
+            - jenkins
+
+    agent_1:
+        <<: *agent-common-structure
+        container_name: agent_1
+    
+    # agent_2:
+    #     <<: *agent-common-structure
+
+    # agent_3:
+    #     <<: *agent-common-structure
+
+networks:
+  jenkins:
+    driver: bridge

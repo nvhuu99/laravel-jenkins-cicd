@@ -1,0 +1,371 @@
+def SSH_CONFIG = "~/.ssh/config"
+def SSH_CONFIG_BACKUP = "~/.ssh/config.backup"
+def SSH_KEY_FILE = "~/.ssh/cluster_ssh_key.pem"
+def TEMPORARY_BRANCH = "${JOB_NAME}_${BUILD_NUMBER}"
+def FAIL_REASON = 'UNEXPECED_ERROR'
+def PIPELINE_STATE = 'FAILURE'
+
+pipeline {
+
+    agent { label 'check_in_integration_branch' }
+
+    parameters {
+        string(name: 'GIT_BRANCH', defaultValue: '', description: 'Commits on this branch trigger the build')
+        string(name: 'INTEGRATION_BRANCH', defaultValue: '', description: 'Merge new changes to this branch')
+        string(name: 'GIT_REMOTE', defaultValue: '', description: 'The git repository of laravel application')
+        string(name: 'GIT_EMAIL', defaultValue: '', description: 'Email of the person making the commit')
+
+        string(name: 'APP_IMAGE', defaultValue: '', description: 'Docker image tag')
+        string(name: 'CLUSTER_HOST', defaultValue: '', description: 'Kubernetes host')
+        string(name: 'CLUSTER_NAMESPACE', defaultValue: '', description: 'Kubernetes namespace')
+
+        string(name: 'GIT_COMMITER_NAME', defaultValue: '', description: 'Git user name used for this build')
+        string(name: 'GIT_COMMITER_EMAIL', defaultValue: '', description: 'Git user email used for this build')
+    }
+
+    environment {
+        APP_SRC = "${JENKINS_SCRIPTS}/app/src"
+    }
+
+    stages {
+
+        stage('Prepare & clone repo') {
+            steps {
+                // Preparations
+                script {
+                    sh "mkdir -p ${WORKSPACE}/${BUILD_NUMBER}"
+                }
+                // Clone app
+                script {
+                    try {
+                        withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'git-tool')]) {
+                            sh "mkdir -p ${APP_SRC}"
+                            sh "git config --global credential.helper store"
+                            sh "git config --global user.name ${GIT_COMMITER_NAME}"
+                            sh "git config --global user.email ${GIT_COMMITER_EMAIL}"
+                            sh "git clone ${GIT_REMOTE} ${APP_SRC} > /dev/null 2>&1"
+                            echo "Repository has cloned in: ${APP_SRC}"
+                        }
+                    }
+                    catch (Exception e) {
+                        echo "Repository may cloned before"
+                    }
+                }
+            }
+        }
+        
+        stage('Check for changes') {
+            steps {
+                script {
+                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'git-tool')]) {
+                        def exitCode = sh(
+                            returnStatus: true,
+                            script: """
+                                ${env.JENKINS_SCRIPTS}/check_for_diffs_from_two_branches.sh \
+                                    --target=${params.INTEGRATION_BRANCH} \
+                                    --source=${params.GIT_BRANCH}
+                            """
+                        )
+                        if (exitCode == 0) {
+                            PIPELINE_STATE = 'HAS_CHANGES'
+                        }
+                        else if (exitCode != 2){
+                            FAIL_REASON = 'UNEXPECED_ERROR'
+                            PIPELINE_STATE = 'FAILURE'
+                        }
+                    }
+                }
+            }
+        }
+    
+        stage('Check if can merge') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'HAS_CHANGES'
+                }
+            }
+            steps {
+                script {
+                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'git-tool')]) {
+                        def exitCode = sh(
+                            returnStatus: true,
+                            script: """
+                                ${env.JENKINS_SCRIPTS}/check_if_can_merge_two_branches.sh \
+                                    --target=${params.INTEGRATION_BRANCH} \
+                                    --source=${params.GIT_BRANCH} \
+                                    --temporary=${TEMPORARY_BRANCH}
+                            """ 
+                        )
+                        if (exitCode == 0) {
+                            PIPELINE_STATE = 'CAN_MERGE'
+                        }
+                        else {
+                            FAIL_REASON = 'MERGE_FAILED'
+                            PIPELINE_STATE = 'FAILURE'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Merge and push') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'CAN_MERGE'
+                }
+            }
+            steps {
+                script {
+                    withCredentials([gitUsernamePassword(credentialsId: 'github', gitToolName: 'git-tool')]) {
+                        def exitCode = sh(
+                            script: """
+                                ${env.JENKINS_SCRIPTS}/merge_and_push.sh \
+                                    --target=${params.INTEGRATION_BRANCH} \
+                                    --source=${params.GIT_BRANCH}
+                            """, 
+                            returnStatus: true
+                        )
+                        if (exitCode == 0){
+                            PIPELINE_STATE = 'HAS_MERGED'
+                        }
+                        else {
+                            FAIL_REASON = 'MERGE_FAILED'
+                            PIPELINE_STATE = 'FAILURE'
+                        }
+                    }
+                }
+            }
+        }
+    
+        stage ('Build & push app image') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'HAS_MERGED'
+                }
+            }
+            steps {
+                script {
+                    withCredentials([
+                        usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USR', passwordVariable: 'DOCKER_PSW'),
+                        usernamePassword(credentialsId: 'mysql', usernameVariable: 'DB_USR', passwordVariable: 'DB_PSW')
+                    ]) {
+                        def buildStatus = sh(
+                            script: """
+                                echo "${DOCKER_PSW}" | docker login -u ${DOCKER_USR} --password-stdin && \
+                                ${JENKINS_SCRIPTS}/build_app.sh \
+                                    --app-env="development" \
+                                    --app-image="${APP_IMAGE}-${BUILD_NUMBER}" \
+                                    --build-branch="${INTEGRATION_BRANCH}" \
+                                    --db-name="mysql" \
+                                    --db-user="${DB_USR}" \
+                                    --db-password="${DB_PSW}" && \
+                                docker push "${APP_IMAGE}-${BUILD_NUMBER}" && \
+                                docker logout
+                            """,
+                            returnStatus: true,
+                        )
+                        if (buildStatus == 0) {
+                            PIPELINE_STATE = 'BUILT_APP_IMAGE'
+                        }
+                        else {
+                            FAIL_REASON = 'UNEXPECTED_ERROR'
+                            PIPELINE_STATE = 'FAILURE'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Prepare Kubernetes SSH configuration') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'BUILT_APP_IMAGE'
+                }
+            }
+            steps {
+                script {
+                    withCredentials([
+                        sshUserPrivateKey(credentialsId: 'kubernetes_ssh', usernameVariable: 'SSH_USER', keyFileVariable: 'SSH_KEY')
+                    ]) {
+                        // Prepare temporary ssh config
+                        sh "cp -f ${SSH_KEY} ${SSH_KEY_FILE}"
+                        sh "chmod 400 ${SSH_KEY_FILE}"
+                        sh """
+                            if [ -f ${SSH_CONFIG} ]; then
+                                mv -f ${SSH_CONFIG} ${SSH_CONFIG_BACKUP}
+                            fi
+                            echo "Host default" > ${SSH_CONFIG}
+                            echo "    HostName ${CLUSTER_HOST}" >> ${SSH_CONFIG}
+                            echo "    StrictHostKeyChecking no" >> ${SSH_CONFIG}
+                            echo "    UserKnownHostsFile=/dev/null" >> ${SSH_CONFIG}
+                            echo "    User ${SSH_USER}" >> ${SSH_CONFIG}
+                            echo "    IdentityFile ${SSH_KEY_FILE}" >> ${SSH_CONFIG}
+                            chmod 600 ${SSH_CONFIG}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage ('Deploy app') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'BUILT_APP_IMAGE'
+                }
+            }
+            steps {
+                script {
+                    withCredentials([usernamePassword(credentialsId: 'mysql', usernameVariable: 'DB_USR', passwordVariable: 'DB_PSW')]) {
+                        def deployStatus = sh(
+                            returnStatus: true,
+                            script: """
+                                ${env.JENKINS_SCRIPTS}/deploy_app.sh \
+                                    --app-image="${APP_IMAGE}-${BUILD_NUMBER}" \
+                                    --app-namespace="${CLUSTER_NAMESPACE}" \
+                                    --db-name="mysql" \
+                                    --db-user="${DB_USR}" \
+                                    --db-password="${DB_PSW}"
+                            """
+                        )
+                        if (deployStatus == 0) {
+                            PIPELINE_STATE = 'APP_DEPLOYED'
+                        }
+                        else {
+                            FAIL_REASON = 'UNEXPECTED_ERROR'
+                            PIPELINE_STATE = 'FAILURE'
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Run unit tests') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'APP_DEPLOYED'
+                }
+            }
+            steps {
+                script {
+                    def testLogFile = "${WORKSPACE}/${BUILD_NUMBER}/unit-test.log"
+                    def junitFile = "${WORKSPACE}/${BUILD_NUMBER}/junit.xml"
+                    def phpunitExitCode = sh(
+                        returnStatus: true,
+                        script: """
+                            ${JENKINS_SCRIPTS}/run_unit_test.sh \
+                                --app-namespace="${CLUSTER_NAMESPACE}" \
+                                --log-file=${testLogFile} \
+                                --junit-file=${junitFile}
+                        """, 
+                    )
+                    // Process the JUnit test report for thresholds check
+                    xunit([
+                        thresholds: [
+                            failed ( failureThreshold: "0" ),
+                            skipped ( unstableThreshold: "0" )
+                        ],
+                        tools: [
+                            PHPUnit(pattern: "${BUILD_NUMBER}/junit.xml", stopProcessingIfError: true, failIfNotNew: true)
+                        ]
+                    ])
+                    if (phpunitExitCode != 0 || currentBuild.result == 'FAILURE') {
+                        FAIL_REASON = 'FAILED_TEST'
+                        PIPELINE_STATE = 'FAILURE'
+                    }
+                    else {
+                        PIPELINE_STATE = 'SUCCESS'
+                    }
+                }
+            }
+        }
+
+        stage('Failure email notification') {
+            when {
+                expression {
+                    return PIPELINE_STATE == 'FAILURE'
+                }
+            }
+            steps {
+                script {
+                    // Create email body 
+                    def emailFilename = "failure-notification.email"
+                    def exitCode = sh(
+                        script: """
+                            ${env.JENKINS_SCRIPTS}/prepare_failure_email.sh \
+                                --target=${params.INTEGRATION_BRANCH} \
+                                --source=${params.GIT_BRANCH} \
+                                --fail-reason=${FAIL_REASON} \
+                                --email-file-name=${emailFilename}
+                        """,
+                        returnStatus: true
+                    )
+                    // Attachments
+                    def attachments = []
+                    def attachLog = false
+                    if (FAIL_REASON == 'FAILED_TEST') {
+                        attachments = [
+                            "${BUILD_NUMBER}/unit-test.log",
+                        ]
+                    }
+                    else if (FAIL_REASON == 'MERGE_FAILED') {
+                        attachments = [
+                            "${BUILD_NUMBER}/err.log",
+                            "${BUILD_NUMBER}/conflict.log",
+                        ]
+                    }
+                    else {
+                        attachLog = true
+                    }
+                    // Send email
+                    emailext (
+                        attachLog: attachLog,
+                        subject: "Pipeline Failure Notification - Merge attempt from ${params.GIT_BRANCH} to ${params.INTEGRATION_BRANCH}",
+                        body: readFile("${BUILD_NUMBER}/${emailFilename}"),
+                        to: params.GIT_EMAIL,
+                        attachmentsPattern: attachments.join(',')
+                    )
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Set result
+            script {
+                if (PIPELINE_STATE == 'FAILURE') {
+                    currentBuild.result = 'FAILURE'
+                }
+            }
+            // Delete temporary branch
+            script {
+                dir(env.APP_SRC) {
+                    def branchExists = sh(
+                        script: "(git show-ref refs/heads/${TEMPORARY_BRANCH}) > /dev/null 2>&1", 
+                        returnStatus: true
+                    )
+                    if (branchExists == 0) {
+                        sh """
+                            (git switch ${params.GIT_BRANCH}) > /dev/null 2>&1
+                            (git branch -D ${TEMPORARY_BRANCH}) > /dev/null 2>&1
+                        """
+                        echo "Temporary branch deleted: ${TEMPORARY_BRANCH}"
+                    }
+                }
+            }
+            // Remove SSH credential & rollback config backup
+            script {
+                dir (WORKSPACE) {
+                    sh """
+                        if [ -f ${SSH_KEY_FILE} ]; then
+                            rm ${SSH_KEY_FILE}
+                        fi
+                        if [ -f ${SSH_CONFIG_BACKUP} ]; then
+                            mv -f ${SSH_CONFIG_BACKUP} ${SSH_CONFIG}
+                        fi
+                    """
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,49 @@
+FROM jenkins/agent:latest-jdk17
+
+ENV JENKINS_SCRIPTS=/data/jenkins/scripts
+ENV APP_SRC=${JENKINS_SCRIPTS}/app/src
+
+# Switch to root
+USER root
+
+# Update & install dependencies
+RUN apt-get update && apt-get install -y \
+    vim \
+    git \
+    wget \
+    curl \
+    gnupg2 \
+    apt-transport-https \
+    ca-certificates lsb-release \
+    software-properties-common \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Add Docker repository and install Docker CLI
+RUN install -m 0755 -d /etc/apt/keyrings && \
+    curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && \
+    chmod a+r /etc/apt/keyrings/docker.asc && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian \
+    $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null && \
+    apt-get update && apt-get install -y docker-ce-cli
+
+# Add PHP repository and install PHP 8.1 with required extensions
+RUN curl -fsSL https://packages.sury.org/php/apt.gpg | apt-key add - && \
+    echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" | tee /etc/apt/sources.list.d/php.list && \
+    apt-get update && apt-get install -y php8.1-cli php8.1-mbstring php8.1-curl php8.1-zip php8.1-xml && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Install Composer globally
+WORKDIR /home/root
+RUN wget https://getcomposer.org/download/2.5.7/composer.phar && \
+    chmod +x composer.phar && mv composer.phar /usr/local/bin/composer
+
+# Install Node.js 18.x
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && apt-get install -y nodejs
+
+# Copy executable and application files
+COPY jenkins-agents/executable ${JENKINS_SCRIPTS}
+COPY ./dockerfile.app ${JENKINS_SCRIPTS}/
+COPY kubernetes/ ${JENKINS_SCRIPTS}/
+COPY app ${JENKINS_SCRIPTS}/app
+
+CMD ["tail", "-f", "/dev/null"]

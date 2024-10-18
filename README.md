@@ -19,14 +19,15 @@ This pipeline is designed to support that process. It continuously checks for ne
 
 ## Project Directory Structure
 
-- **`/app`**: Contains configuration files used to build the Docker image for the application.
-- **`/jenkins-agents`**: Stores bash scripts for the pipeline steps.
-- **`/jenkins-master`**: Contains bash scripts for Jenkins administration tasks.
-- **`/kubernetes`**: Includes deployment configuration files for Kubernetes.
+- [`/app`](./app): Contains configuration files used to build the Docker image for the application.
+- [`/jenkins-agents`](./jenkins-agents): Stores bash scripts for the pipeline steps.
+- [`/jenkins-master`](./jenkins-master): Contains bash scripts for Jenkins administration tasks.
+- [`/kubernetes`](./kubernetes): Includes deployment configuration files for Kubernetes.
 
 ### Key Files
-- **`/jenkins-master/items/pipelines/checkin_integration_branch/Jenkinsfile`**: Defines the pipeline configuration.
-- **`dockerfile.agent`**: Used to build the Jenkins agent Docker image.
-- **`dockerfile.master`**: Used to build the Jenkins master Docker image.
-- **`dockerfile.app`**: Used by the Jenkins agent to build the Laravel app image.
-- **`docker-compose.yml`**: Facilitates local testing by setting up the Jenkins master and agents quickly.
+- [`jenkins-master/items/pipelines/checkin_integration_branch/Jenkinsfile`](./jenkins-master/items/pipelines/checkin_integration_branch/Jenkinsfile): Defines the pipeline configuration.
+- [`dockerfile.agent`](./dockerfile.agent): Used to build the Jenkins agent Docker image.
+- [`dockerfile.master`](./dockerfile.master): Used to build the Jenkins master Docker image.
+- [`dockerfile.app`](./dockerfile.app): Used by the Jenkins agent to build the Laravel app image.
+- [`docker-compose.yml`](./docker-compose.yml): Facilitates local testing by setting up the Jenkins master and agents quickly.
+
